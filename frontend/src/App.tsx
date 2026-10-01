@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { CardColor, GameStateView, Session } from './types';
-import { createRoom, joinRoom, leaveRoom, pingHealth, rejoinRoom } from './api';
+import { createRoom, joinRoom, leaveRoom, pingHealth, rejoinRoom, wakeServer } from './api';
 import { clearSession, loadSession, saveSession } from './session';
 import { useGameSocket } from './useGameSocket';
 import { Home } from './components/Home';
@@ -8,14 +8,23 @@ import { Lobby } from './components/Lobby';
 import { GameBoard } from './components/GameBoard';
 import './App.css';
 
+function statusOf(e: unknown): number | undefined {
+  return typeof e === 'object' && e !== null && 'status' in e
+    ? Number((e as { status?: number }).status)
+    : undefined;
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [state, setState] = useState<GameStateView | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyHint, setBusyHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+  const [serverReady, setServerReady] = useState<boolean | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const leavingRef = useRef(false);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -34,6 +43,7 @@ export default function App() {
     saveSession(normalized);
   }, []);
 
+  // Restore seat; only clear session on definitive 404 (seat gone), not on cold-start blips.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -42,36 +52,69 @@ export default function App() {
         if (!cancelled) setRestoring(false);
         return;
       }
-      try {
-        const res = await rejoinRoom(saved.roomCode, saved.playerId);
-        if (cancelled) return;
-        applySession({
-          playerId: res.playerId,
-          roomCode: res.roomCode,
-          displayName: res.displayName,
-          host: res.host,
-        }, res.gameState);
-        showToast('Rejoined your seat');
-      } catch (e) {
-        clearSession();
-        if (!cancelled) {
-          setSession(null);
-          setState(null);
-          setError(e instanceof Error ? e.message : 'Could not restore session');
+      let lastMsg = 'Could not restore session';
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (attempt > 0) await wakeServer();
+          const res = await rejoinRoom(saved.roomCode, saved.playerId);
+          if (cancelled) return;
+          applySession({
+            playerId: res.playerId,
+            roomCode: res.roomCode,
+            displayName: res.displayName,
+            host: res.host,
+          }, res.gameState);
+          showToast('Rejoined your seat');
+          if (!cancelled) setRestoring(false);
+          return;
+        } catch (e) {
+          const st = statusOf(e);
+          lastMsg = e instanceof Error ? e.message : lastMsg;
+          if (st === 404 || st === 400) {
+            clearSession();
+            if (!cancelled) {
+              setSession(null);
+              setState(null);
+              setError(lastMsg);
+            }
+            break;
+          }
+          // transient — retry
         }
-      } finally {
-        if (!cancelled) setRestoring(false);
       }
+      if (!cancelled) setRestoring(false);
     })();
     return () => { cancelled = true; };
   }, [applySession, showToast]);
 
+  // Wake Railway on landing (cold start) + keep-alive while seated
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const ok = await wakeServer();
+      if (!cancelled) setServerReady(ok);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     if (!session) return;
-    const id = window.setInterval(() => { void pingHealth(); }, 25_000);
+    const id = window.setInterval(() => { void pingHealth(); }, 20_000);
     void pingHealth();
     return () => window.clearInterval(id);
   }, [session?.playerId, session?.roomCode]);
+
+  // If we were removed from the room (timeout), clear local seat — not on intentional Leave.
+  useEffect(() => {
+    if (!session || !state?.players || leavingRef.current) return;
+    const stillSeated = state.players.some((p) => p.id === session.playerId);
+    if (!stillSeated || state.message === 'Room closed' || state.message === 'Left room') {
+      clearSession();
+      setSession(null);
+      setState(null);
+      setError('Your seat expired or the room closed — create or join again');
+    }
+  }, [session, state]);
 
   const onState = useCallback((s: GameStateView) => {
     setState(s);
@@ -81,6 +124,8 @@ export default function App() {
     }
     setSession((prev) => {
       if (!prev) return prev;
+      const stillSeated = s.players?.some((p) => p.id === prev.playerId);
+      if (!stillSeated) return prev; // effect above clears
       const host = s.players?.find((p) => p.id === prev.playerId)?.host ?? prev.host;
       const next = { ...prev, host, roomCode: s.roomCode || prev.roomCode };
       saveSession(next);
@@ -99,46 +144,51 @@ export default function App() {
     onError: onSocketError,
   });
 
-  const handleCreate = async (name: string) => {
+  const withBusy = async (hint: string, fn: () => Promise<void>) => {
     setBusy(true);
+    setBusyHint(hint);
     setError(null);
+    const slow = window.setTimeout(() => {
+      setBusyHint('Waking server — first load can take up to a minute…');
+    }, 2500);
     try {
-      const res = await createRoom(name);
-      applySession({
-        playerId: res.playerId,
-        roomCode: res.roomCode,
-        displayName: res.displayName,
-        host: res.host,
-      }, res.gameState);
+      await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create room');
+      setError(e instanceof Error ? e.message : 'Request failed');
     } finally {
+      window.clearTimeout(slow);
       setBusy(false);
+      setBusyHint(null);
     }
   };
 
-  const handleJoin = async (code: string, name: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await joinRoom(code, name);
-      applySession({
-        playerId: res.playerId,
-        roomCode: res.roomCode,
-        displayName: res.displayName,
-        host: res.host,
-      }, res.gameState);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to join room');
-    } finally {
-      setBusy(false);
-    }
-  };
+  const handleCreate = (name: string) => withBusy('Creating room…', async () => {
+    const res = await createRoom(name);
+    applySession({
+      playerId: res.playerId,
+      roomCode: res.roomCode,
+      displayName: res.displayName,
+      host: res.host,
+    }, res.gameState);
+    setServerReady(true);
+  });
+
+  const handleJoin = (code: string, name: string) => withBusy('Joining room…', async () => {
+    const res = await joinRoom(code, name);
+    applySession({
+      playerId: res.playerId,
+      roomCode: res.roomCode,
+      displayName: res.displayName,
+      host: res.host,
+    }, res.gameState);
+    setServerReady(true);
+  });
 
   const leave = async () => {
     const current = session;
+    leavingRef.current = true;
     if (current) {
-      // Prefer reliable REST leave; WS may already be dropping
+      // Prefer reliable REST leave while session/WS still alive; keep Leave button intentional.
       try {
         await leaveRoom(current.roomCode, current.playerId);
       } catch {
@@ -149,6 +199,7 @@ export default function App() {
     setSession(null);
     setState(null);
     setError(null);
+    leavingRef.current = false;
   };
 
   if (restoring) {
@@ -169,7 +220,16 @@ export default function App() {
   }
 
   if (!session || !state) {
-    return <Home busy={busy} error={error} onCreate={handleCreate} onJoin={handleJoin} />;
+    return (
+      <Home
+        busy={busy}
+        busyHint={busyHint}
+        error={error}
+        serverReady={serverReady}
+        onCreate={handleCreate}
+        onJoin={handleJoin}
+      />
+    );
   }
 
   const shell = (body: ReactNode) => (

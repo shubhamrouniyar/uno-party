@@ -21,8 +21,8 @@ public class GameService {
     private static final int MAX_PLAYERS = 6;
     private static final int STARTING_HAND = 7;
     private static final Duration IDLE_TIMEOUT = Duration.ofMinutes(45);
-    /** Keep seat after WS drop; then permanently remove and continue/pause. */
-    private static final Duration DISCONNECT_GRACE = Duration.ofSeconds(60);
+    /** Keep seat after WS drop (~3 min); then permanently remove and continue/pause. */
+    private static final Duration DISCONNECT_GRACE = Duration.ofSeconds(180);
     private static final String CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     private final ConcurrentHashMap<String, Room> rooms = new ConcurrentHashMap<>();

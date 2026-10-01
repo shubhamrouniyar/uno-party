@@ -15,6 +15,7 @@ export function useGameSocket({ session, onState, onError }: Options) {
   const onStateRef = useRef(onState);
   const onErrorRef = useRef(onError);
   const attemptRef = useRef(0);
+  const intentionalClose = useRef(false);
 
   useEffect(() => {
     onStateRef.current = onState;
@@ -23,6 +24,7 @@ export function useGameSocket({ session, onState, onError }: Options) {
 
   useEffect(() => {
     if (!session) {
+      intentionalClose.current = true;
       clientRef.current?.deactivate();
       clientRef.current = null;
       setStatus('idle');
@@ -30,6 +32,7 @@ export function useGameSocket({ session, onState, onError }: Options) {
       return;
     }
 
+    intentionalClose.current = false;
     const code = session.roomCode.toUpperCase();
     setStatus('connecting');
 
@@ -38,6 +41,7 @@ export function useGameSocket({ session, onState, onError }: Options) {
       reconnectDelay: 2000,
       heartbeatIncoming: 10000,
       heartbeatOutgoing: 10000,
+      connectionTimeout: 20_000,
       onConnect: () => {
         attemptRef.current = 0;
         client.reconnectDelay = 2000;
@@ -57,19 +61,24 @@ export function useGameSocket({ session, onState, onError }: Options) {
         });
       },
       onDisconnect: () => {
+        if (intentionalClose.current) {
+          setStatus('idle');
+          return;
+        }
         setStatus((s) => (s === 'idle' ? 'idle' : 'disconnected'));
       },
       onStompError: (frame) => {
         onErrorRef.current?.(frame.headers['message'] || 'WebSocket error');
       },
       onWebSocketClose: () => {
+        if (intentionalClose.current) return;
         attemptRef.current += 1;
         const delay = Math.min(30_000, 1000 * 2 ** Math.min(attemptRef.current, 5));
         client.reconnectDelay = delay;
         setStatus('reconnecting');
       },
       onWebSocketError: () => {
-        setStatus('reconnecting');
+        if (!intentionalClose.current) setStatus('reconnecting');
       },
     });
 
@@ -77,6 +86,7 @@ export function useGameSocket({ session, onState, onError }: Options) {
     clientRef.current = client;
 
     return () => {
+      intentionalClose.current = true;
       client.deactivate();
       if (clientRef.current === client) {
         clientRef.current = null;

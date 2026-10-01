@@ -25,9 +25,22 @@ public class RoomController {
         this.presence = presence;
     }
 
+    private static final long STARTED_AT_MS = System.currentTimeMillis();
+
     @GetMapping("/health")
-    public Map<String, String> health() {
-        return Map.of("status", "ok", "service", "uno-party");
+    public Map<String, Object> health() {
+        return Map.of(
+                "status", "ok",
+                "service", "uno-party",
+                "uptimeMs", System.currentTimeMillis() - STARTED_AT_MS,
+                "rooms", gameService.allRooms().size()
+        );
+    }
+
+    /** Explicit wake/ping used by SPA before create/join (Railway cold starts). */
+    @GetMapping({"/health/warm", "/warm"})
+    public Map<String, Object> warm() {
+        return health();
     }
 
     @PostMapping("/rooms")

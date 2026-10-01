@@ -112,4 +112,22 @@ class GameServiceTest {
         assertTrue(state.getPlayers().get(0).isHost());
         assertEquals(bob.playerId(), state.getPlayers().get(0).getId());
     }
+
+    @Test
+    void purgeDoesNotRemoveWithinGrace() {
+        var host = game.createRoom("Alice");
+        var bob = game.joinRoom(host.roomCode(), "Bob");
+        game.markDisconnected(host.roomCode(), bob.playerId());
+        var changed = game.purgeTimedOutDisconnects();
+        assertTrue(changed.isEmpty());
+        assertEquals(2, game.getStateForPlayer(host.roomCode(), host.playerId()).getPlayers().size());
+    }
+
+    @Test
+    void markDisconnectedIsIdempotentWhenAlreadyOffline() {
+        var host = game.createRoom("Alice");
+        assertTrue(game.markDisconnected(host.roomCode(), host.playerId()));
+        assertFalse(game.markDisconnected(host.roomCode(), host.playerId()));
+    }
+
 }
