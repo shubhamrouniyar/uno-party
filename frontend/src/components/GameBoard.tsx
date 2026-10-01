@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
-import type { Card, CardColor, GameStateView, Session } from '../types';
+import type { Card, CardColor, ConnectionStatus, GameStateView, Session } from '../types';
 import { UnoCard, colorHex } from './UnoCard';
 import { ColorPicker } from './ColorPicker';
+import { ConnectionBadge } from './ConnectionBadge';
 
 interface Props {
   session: Session;
   state: GameStateView;
   connected: boolean;
+  connectionStatus: ConnectionStatus;
   onPlay: (cardId: string, color?: CardColor) => void;
   onDraw: () => void;
   onPass: () => void;
@@ -32,10 +34,14 @@ function canPlayCard(card: Card, state: GameStateView): boolean {
 }
 
 export function GameBoard({
-  session, state, connected, onPlay, onDraw, onPass, onCallUno, onChallengeUno, onRematch, onLeave,
+  session, state, connectionStatus, onPlay, onDraw, onPass, onCallUno, onChallengeUno, onRematch, onLeave,
 }: Props) {
   const [pendingWild, setPendingWild] = useState<Card | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [localToast, setLocalToast] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const you = state.players.find((p) => p.id === session.playerId);
+  const isHost = you?.host ?? session.host;
 
   const playableIds = useMemo(() => {
     const set = new Set<string>();
@@ -47,8 +53,8 @@ export function GameBoard({
 
   const handleCardClick = (card: Card) => {
     if (!playableIds.has(card.id)) {
-      setToast('That card cannot be played');
-      setTimeout(() => setToast(null), 1500);
+      setLocalToast('That card cannot be played');
+      setTimeout(() => setLocalToast(null), 1500);
       return;
     }
     if (card.type === 'WILD' || card.type === 'WILD_DRAW_FOUR') {
@@ -63,13 +69,24 @@ export function GameBoard({
   );
 
   const finished = state.status === 'FINISHED';
+  const paused = state.status === 'PAUSED';
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard?.writeText(state.roomCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch { /* ignore */ }
+  };
 
   return (
     <div className="game-board">
       <header className="game-top">
-        <div>
-          <span className="code-chip">{state.roomCode}</span>
-          <span className={`live ${connected ? 'on' : ''}`}>{connected ? 'Live' : '…'}</span>
+        <div className="game-top-left">
+          <button type="button" className="code-chip" onClick={() => { void copyCode(); }} title="Copy room code">
+            {state.roomCode} {copied ? '✓' : '⧉'}
+          </button>
+          <ConnectionBadge status={connectionStatus} />
         </div>
         <div className="meta">
           <span
@@ -84,14 +101,26 @@ export function GameBoard({
         </div>
       </header>
 
-      <section className="opponents">
+      {paused && (
+        <div className="pause-banner" role="status">
+          {state.message || 'Game paused — waiting for players to reconnect'}
+        </div>
+      )}
+
+      <section className="opponents" aria-label="Players">
         {state.players.map((p) => (
           <div
             key={p.id}
-            className={`opp ${p.current ? 'current' : ''} ${p.id === session.playerId ? 'self' : ''}`}
+            className={[
+              'opp',
+              p.current ? 'current' : '',
+              p.id === session.playerId ? 'self' : '',
+              !p.connected ? 'offline' : '',
+            ].filter(Boolean).join(' ')}
           >
             <div className="opp-name">
               {p.name}{p.host ? ' 👑' : ''}{p.calledUno ? ' UNO!' : ''}
+              {!p.connected ? ' · offline' : ''}
             </div>
             <div className="opp-cards">
               {Array.from({ length: Math.min(p.handSize, 8) }).map((_, i) => (
@@ -110,21 +139,33 @@ export function GameBoard({
       </section>
 
       <section className="table">
-        <div className="pile draw-pile" onClick={state.yourTurn && !state.mustDrawOrPlay ? onDraw : undefined}>
+        <button
+          type="button"
+          className="pile draw-pile"
+          disabled={!state.yourTurn || state.mustDrawOrPlay || state.status !== 'PLAYING'}
+          onClick={onDraw}
+        >
           <UnoCard
             card={{ id: 'deck', color: 'WILD', type: 'WILD', number: null }}
             faceDown
           />
           <span className="pile-label">Draw ({state.drawPileCount})</span>
-        </div>
+        </button>
         <div className="pile discard-pile">
           {state.topCard ? <UnoCard card={state.topCard} /> : <div className="empty-pile">?</div>}
           <span className="pile-label">Discard</span>
         </div>
       </section>
 
-      {state.yourTurn && (
-        <div className="turn-banner">Your turn!{state.mustDrawOrPlay ? ' Play the drawn card or pass.' : ''}</div>
+      {state.yourTurn && state.status === 'PLAYING' && (
+        <div className="turn-banner pulse">
+          Your turn!{state.mustDrawOrPlay ? ' Play the drawn card or pass.' : ''}
+        </div>
+      )}
+      {!state.yourTurn && state.status === 'PLAYING' && (
+        <div className="turn-banner waiting-turn">
+          Waiting for {state.players.find((p) => p.current)?.name || 'someone'}…
+        </div>
       )}
 
       <section className="hand-area">
@@ -134,18 +175,18 @@ export function GameBoard({
               key={c.id}
               card={c}
               playable={playableIds.has(c.id)}
-              onClick={state.yourTurn ? () => handleCardClick(c) : undefined}
+              onClick={state.yourTurn && state.status === 'PLAYING' ? () => handleCardClick(c) : undefined}
             />
           ))}
         </div>
         <div className="hand-actions">
-          {state.yourTurn && !state.mustDrawOrPlay && (
+          {state.yourTurn && !state.mustDrawOrPlay && state.status === 'PLAYING' && (
             <button type="button" className="btn secondary" onClick={onDraw}>Draw</button>
           )}
           {state.mustDrawOrPlay && (
             <button type="button" className="btn secondary" onClick={onPass}>Pass</button>
           )}
-          {(state.yourHand?.length === 1 || state.yourHand?.length === 2) && (
+          {(state.yourHand?.length === 1 || state.yourHand?.length === 2) && state.status === 'PLAYING' && (
             <button type="button" className="btn uno" onClick={onCallUno}>UNO!</button>
           )}
           {challengable.map((p) => (
@@ -161,13 +202,13 @@ export function GameBoard({
         </div>
       </section>
 
-      <aside className="event-log">
+      <aside className="event-log" aria-live="polite">
         {(state.eventLog || []).slice(-8).map((e, i) => (
-          <div key={i} className="event">{e}</div>
+          <div key={`${i}-${e}`} className="event">{e}</div>
         ))}
       </aside>
 
-      {toast && <div className="toast">{toast}</div>}
+      {localToast && <div className="toast">{localToast}</div>}
 
       {pendingWild && (
         <ColorPicker
@@ -185,11 +226,26 @@ export function GameBoard({
             <h2>🎉 {state.winnerName || 'Someone'} wins!</h2>
             <p>Great game — rematch?</p>
             <div className="lobby-actions">
-              {session.host && (
+              {isHost && (
                 <button type="button" className="btn primary" onClick={onRematch}>Rematch</button>
               )}
-              {!session.host && <p className="waiting">Waiting for host to rematch…</p>}
+              {!isHost && <p className="waiting">Waiting for host to rematch…</p>}
               <button type="button" className="btn ghost" onClick={onLeave}>Leave</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {paused && state.players.length < 2 && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>Paused</h2>
+            <p>{state.message || 'Need at least 2 players. Ask a friend to reconnect, or leave and start a new room.'}</p>
+            <div className="lobby-actions">
+              {isHost && state.players.length >= 2 && (
+                <button type="button" className="btn primary" onClick={onRematch}>Restart game</button>
+              )}
+              <button type="button" className="btn ghost" onClick={onLeave}>Leave room</button>
             </div>
           </div>
         </div>

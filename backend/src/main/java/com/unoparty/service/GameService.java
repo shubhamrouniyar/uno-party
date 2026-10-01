@@ -21,6 +21,8 @@ public class GameService {
     private static final int MAX_PLAYERS = 6;
     private static final int STARTING_HAND = 7;
     private static final Duration IDLE_TIMEOUT = Duration.ofMinutes(45);
+    /** Keep seat after WS drop; then permanently remove and continue/pause. */
+    private static final Duration DISCONNECT_GRACE = Duration.ofSeconds(60);
     private static final String CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     private final ConcurrentHashMap<String, Room> rooms = new ConcurrentHashMap<>();
@@ -31,6 +33,7 @@ public class GameService {
         String playerId = UUID.randomUUID().toString();
         Player host = new Player(playerId, sanitizeName(displayName));
         host.setHost(true);
+        host.markConnected();
         room.getPlayers().add(host);
         room.setCreatedBy(playerId);
         room.touch();
@@ -39,35 +42,87 @@ public class GameService {
         return new JoinResult(playerId, code, host.getName(), true, toView(room, playerId));
     }
 
-    public synchronized JoinResult joinRoom(String code, String displayName) {
-        Room room = requireRoom(code.toUpperCase());
+    public synchronized JoinResult joinRoom(String rawCode, String displayName) {
+        String code = normalizeCode(rawCode);
+        Room room = requireRoom(code);
         if (room.getStatus() != GameStatus.LOBBY) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Game already in progress");
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Game already started — late join is only allowed in the lobby");
         }
         if (room.getPlayers().size() >= MAX_PLAYERS) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Room is full (max " + MAX_PLAYERS + ")");
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Room is full (max " + MAX_PLAYERS + " players)");
         }
         String name = sanitizeName(displayName);
         boolean nameTaken = room.getPlayers().stream()
                 .anyMatch(p -> p.getName().equalsIgnoreCase(name));
         if (nameTaken) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Display name already taken in this room");
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Display name already taken in this room — pick another");
         }
         String playerId = UUID.randomUUID().toString();
         Player player = new Player(playerId, name);
+        player.markConnected();
         room.getPlayers().add(player);
         room.touch();
         room.addEvent(name + " joined the party");
         return new JoinResult(playerId, room.getCode(), name, false, toView(room, playerId));
     }
 
-    public GameStateView getStateForPlayer(String code, String playerId) {
-        Room room = requireRoom(code.toUpperCase());
+    /**
+     * Restore a seat after refresh / reconnect using the persisted playerId.
+     */
+    public synchronized JoinResult rejoinRoom(String rawCode, String playerId) {
+        if (playerId == null || playerId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "playerId required");
+        }
+        String code = normalizeCode(rawCode);
+        Room room = requireRoom(code);
+        Player player = room.findPlayer(playerId);
+        if (player == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Seat expired or unknown — join the lobby as a new player if the game has not started");
+        }
+        boolean wasOffline = !player.isConnected();
+        player.markConnected();
+        room.touch();
+        if (wasOffline) {
+            room.addEvent(player.getName() + " reconnected");
+        }
+        maybeResumeFromPause(room);
+        return new JoinResult(playerId, room.getCode(), player.getName(), player.isHost(),
+                toView(room, playerId));
+    }
+
+    public synchronized GameStateView leaveRoomRest(String rawCode, String playerId) {
+        String code = normalizeCode(rawCode);
+        Room room = requireRoom(code);
+        Player actor = room.findPlayer(playerId);
+        if (actor == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "You are not in this room");
+        }
+        leaveRoom(room, actor);
+        if (!rooms.containsKey(code)) {
+            GameStateView empty = new GameStateView();
+            empty.setRoomCode(code);
+            empty.setStatus(GameStatus.FINISHED);
+            empty.setMessage("Room closed");
+            empty.setPlayers(List.of());
+            empty.setYourHand(List.of());
+            empty.setEventLog(List.of());
+            return empty;
+        }
         return toView(room, playerId);
     }
 
-    public synchronized GameStateView handleAction(String code, GameAction action) {
-        Room room = requireRoom(code.toUpperCase());
+    public GameStateView getStateForPlayer(String rawCode, String playerId) {
+        Room room = requireRoom(normalizeCode(rawCode));
+        return toView(room, playerId);
+    }
+
+    public synchronized GameStateView handleAction(String rawCode, GameAction action) {
+        String code = normalizeCode(rawCode);
+        Room room = requireRoom(code);
         room.touch();
         if (action.getPlayerId() == null || action.getType() == null) {
             return errorView(room, action.getPlayerId(), "Invalid action");
@@ -76,9 +131,11 @@ public class GameService {
         if (actor == null) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You are not in this room");
         }
+        // Touch presence — any successful action implies connected
+        actor.markConnected();
 
         try {
-            switch (action.getType().toUpperCase()) {
+            switch (action.getType().toUpperCase(Locale.ROOT)) {
                 case "START" -> startGame(room, actor);
                 case "PLAY" -> playCard(room, actor, action.getCardId(), action.getChosenColor());
                 case "DRAW" -> drawCard(room, actor);
@@ -87,6 +144,7 @@ public class GameService {
                 case "CHALLENGE_UNO" -> challengeUno(room, actor, action.getTargetPlayerId());
                 case "REMATCH" -> rematch(room, actor);
                 case "LEAVE" -> leaveRoom(room, actor);
+                case "SYNC" -> { /* no-op; markConnected already done */ }
                 default -> {
                     return errorView(room, action.getPlayerId(), "Unknown action: " + action.getType());
                 }
@@ -97,28 +155,68 @@ public class GameService {
             return view;
         }
 
+        if (!rooms.containsKey(code)) {
+            GameStateView empty = new GameStateView();
+            empty.setRoomCode(code);
+            empty.setStatus(GameStatus.FINISHED);
+            empty.setMessage("Left room");
+            empty.setPlayers(List.of());
+            empty.setYourHand(List.of());
+            empty.setEventLog(List.of());
+            return empty;
+        }
         return toView(room, action.getPlayerId());
     }
 
-    public synchronized void markDisconnected(String code, String playerId) {
-        Room room = rooms.get(code.toUpperCase());
+    /** @return true if state changed */
+    public synchronized boolean markDisconnected(String rawCode, String playerId) {
+        Room room = rooms.get(normalizeCode(rawCode));
+        if (room == null) return false;
+        Player p = room.findPlayer(playerId);
+        if (p == null || !p.isConnected()) return false;
+        p.markDisconnected(Instant.now());
+        room.addEvent(p.getName() + " disconnected — seat held briefly");
+        room.touch();
+        return true;
+    }
+
+    public synchronized void markConnected(String rawCode, String playerId) {
+        Room room = rooms.get(normalizeCode(rawCode));
         if (room == null) return;
         Player p = room.findPlayer(playerId);
         if (p != null) {
-            p.setConnected(false);
-            room.addEvent(p.getName() + " disconnected");
+            boolean wasOffline = !p.isConnected();
+            p.markConnected();
             room.touch();
+            if (wasOffline) {
+                room.addEvent(p.getName() + " reconnected");
+            }
+            maybeResumeFromPause(room);
         }
     }
 
-    public synchronized void markConnected(String code, String playerId) {
-        Room room = rooms.get(code.toUpperCase());
-        if (room == null) return;
-        Player p = room.findPlayer(playerId);
-        if (p != null) {
-            p.setConnected(true);
-            room.touch();
+    /**
+     * Remove players whose disconnect grace elapsed. Returns room codes that changed.
+     */
+    public synchronized List<String> purgeTimedOutDisconnects() {
+        Instant cutoff = Instant.now().minus(DISCONNECT_GRACE);
+        Set<String> changed = new LinkedHashSet<>();
+        for (Room room : List.copyOf(rooms.values())) {
+            List<Player> timedOut = room.getPlayers().stream()
+                    .filter(p -> !p.isConnected()
+                            && p.getDisconnectedAt() != null
+                            && p.getDisconnectedAt().isBefore(cutoff))
+                    .toList();
+            for (Player p : timedOut) {
+                room.addEvent(p.getName() + " timed out — removing from room");
+                leaveRoom(room, p);
+                changed.add(room.getCode());
+                if (!rooms.containsKey(room.getCode())) {
+                    break;
+                }
+            }
         }
+        return List.copyOf(changed);
     }
 
     public int purgeIdleRooms() {
@@ -137,16 +235,22 @@ public class GameService {
         return rooms.values();
     }
 
+    public boolean roomExists(String rawCode) {
+        return rooms.containsKey(normalizeCode(rawCode));
+    }
+
     // ---- game rules ----
 
     private void startGame(Room room, Player actor) {
         if (!actor.isHost()) {
             throw new GameException("Only the host can start the game");
         }
-        if (room.getStatus() != GameStatus.LOBBY && room.getStatus() != GameStatus.FINISHED) {
+        if (room.getStatus() != GameStatus.LOBBY && room.getStatus() != GameStatus.FINISHED
+                && room.getStatus() != GameStatus.PAUSED) {
             throw new GameException("Game already started");
         }
-        if (room.getPlayers().size() < MIN_PLAYERS) {
+        long seated = room.getPlayers().size();
+        if (seated < MIN_PLAYERS) {
             throw new GameException("Need at least " + MIN_PLAYERS + " players to start");
         }
 
@@ -178,11 +282,9 @@ public class GameService {
 
         room.setCurrentPlayerIndex(0);
         room.setDirection(1);
-
-        // Apply starter action effects for Skip/Reverse/Draw Two
         applyStarterEffects(room, starter);
-
-        room.addEvent("Game started! " + room.getCurrentPlayer().getName() + "'s turn");
+        skipOfflineTurns(room);
+        room.addEvent("Game started! " + safeCurrentName(room) + "'s turn");
     }
 
     private void applyStarterEffects(Room room, Card starter) {
@@ -246,10 +348,7 @@ public class GameService {
             room.setActiveColor(card.getColor());
         }
 
-        // UNO tracking: if hand size becomes 1, they should call UNO
         if (actor.getHandSize() == 1) {
-            // calledUno must be true — if they already called before playing, keep it
-            // If they didn't call yet, leave calledUno false so others can challenge
             room.addEvent(actor.getName() + " played " + describe(card) + " — 1 card left!");
         } else if (actor.getHandSize() == 0) {
             room.setStatus(GameStatus.FINISHED);
@@ -264,6 +363,7 @@ public class GameService {
         }
 
         applyCardEffect(room, card);
+        skipOfflineTurns(room);
     }
 
     private void applyCardEffect(Room room, Card card) {
@@ -271,15 +371,18 @@ public class GameService {
             case SKIP -> {
                 advanceTurn(room);
                 Player skipped = room.getCurrentPlayer();
-                room.addEvent(skipped.getName() + " was skipped");
+                if (skipped != null) {
+                    room.addEvent(skipped.getName() + " was skipped");
+                }
                 advanceTurn(room);
             }
             case REVERSE -> {
                 if (room.getPlayers().size() == 2) {
-                    // Reverse with 2 players = skip opponent
                     advanceTurn(room);
                     Player skipped = room.getCurrentPlayer();
-                    room.addEvent("Reverse (2p) — " + skipped.getName() + " skipped");
+                    if (skipped != null) {
+                        room.addEvent("Reverse (2p) — " + skipped.getName() + " skipped");
+                    }
                     advanceTurn(room);
                 } else {
                     room.setDirection(room.getDirection() * -1);
@@ -290,17 +393,21 @@ public class GameService {
             case DRAW_TWO -> {
                 advanceTurn(room);
                 Player victim = room.getCurrentPlayer();
-                drawCards(room, victim, 2);
-                victim.setCalledUno(false);
-                room.addEvent(victim.getName() + " draws 2 and is skipped");
+                if (victim != null) {
+                    drawCards(room, victim, 2);
+                    victim.setCalledUno(false);
+                    room.addEvent(victim.getName() + " draws 2 and is skipped");
+                }
                 advanceTurn(room);
             }
             case WILD_DRAW_FOUR -> {
                 advanceTurn(room);
                 Player victim = room.getCurrentPlayer();
-                drawCards(room, victim, 4);
-                victim.setCalledUno(false);
-                room.addEvent(victim.getName() + " draws 4 and is skipped");
+                if (victim != null) {
+                    drawCards(room, victim, 4);
+                    victim.setCalledUno(false);
+                    room.addEvent(victim.getName() + " draws 4 and is skipped");
+                }
                 advanceTurn(room);
             }
             case WILD, NUMBER -> advanceTurn(room);
@@ -314,7 +421,6 @@ public class GameService {
             throw new GameException("You already drew — play the card or pass");
         }
 
-        // If player has any playable card, still allow draw (house rule: optional draw)
         Card drawn = drawFromPile(room);
         actor.getHand().add(drawn);
         actor.setCalledUno(false);
@@ -329,6 +435,7 @@ public class GameService {
             room.setMustDrawOrPlay(false);
             room.setLastDrawnCardId(null);
             advanceTurn(room);
+            skipOfflineTurns(room);
         }
     }
 
@@ -342,12 +449,12 @@ public class GameService {
         room.setLastDrawnCardId(null);
         room.addEvent(actor.getName() + " passed");
         advanceTurn(room);
+        skipOfflineTurns(room);
     }
 
     private void callUno(Room room, Player actor) {
         requirePlaying(room);
         if (actor.getHandSize() != 1 && actor.getHandSize() != 2) {
-            // Allow calling UNO when about to play down to 1, or when at 1
             throw new GameException("You can only call UNO with 1 or 2 cards");
         }
         actor.setCalledUno(true);
@@ -382,7 +489,8 @@ public class GameService {
         if (!actor.isHost()) {
             throw new GameException("Only the host can start a rematch");
         }
-        if (room.getStatus() != GameStatus.FINISHED && room.getStatus() != GameStatus.PLAYING) {
+        if (room.getStatus() != GameStatus.FINISHED && room.getStatus() != GameStatus.PLAYING
+                && room.getStatus() != GameStatus.PAUSED) {
             throw new GameException("Cannot rematch right now");
         }
         if (room.getPlayers().size() < MIN_PLAYERS) {
@@ -392,29 +500,113 @@ public class GameService {
     }
 
     private void leaveRoom(Room room, Player actor) {
-        room.getPlayers().remove(actor);
+        int leaveIdx = room.getPlayers().indexOf(actor);
+        if (leaveIdx < 0) return;
+
+        boolean playing = room.getStatus() == GameStatus.PLAYING || room.getStatus() == GameStatus.PAUSED;
+        boolean wasCurrent = playing && leaveIdx == room.getCurrentPlayerIndex();
+        int oldIndex = room.getCurrentPlayerIndex();
+        int direction = room.getDirection();
+
+        // Return cards to draw pile so the deck stays playable
+        if (!actor.getHand().isEmpty()) {
+            room.getDrawPile().addAll(actor.getHand());
+            actor.getHand().clear();
+            Collections.shuffle(room.getDrawPile(), ThreadLocalRandom.current());
+        }
+
+        room.getPlayers().remove(leaveIdx);
         room.addEvent(actor.getName() + " left");
+
         if (room.getPlayers().isEmpty()) {
             rooms.remove(room.getCode());
             return;
         }
+
         if (actor.isHost()) {
+            actor.setHost(false);
             Player newHost = room.getPlayers().get(0);
             newHost.setHost(true);
             room.setCreatedBy(newHost.getId());
             room.addEvent(newHost.getName() + " is now the host");
         }
-        if (room.getStatus() == GameStatus.PLAYING) {
-            if (room.getPlayers().size() < MIN_PLAYERS) {
-                room.setStatus(GameStatus.FINISHED);
-                room.addEvent("Not enough players — game ended");
-            } else {
-                // Fix current index
-                int idx = room.getCurrentPlayerIndex();
-                if (idx >= room.getPlayers().size()) {
-                    room.setCurrentPlayerIndex(0);
-                }
+
+        if (room.getStatus() == GameStatus.LOBBY) {
+            return;
+        }
+
+        if (room.getStatus() == GameStatus.FINISHED) {
+            // Keep finished; just fix index bounds
+            if (room.getCurrentPlayerIndex() >= room.getPlayers().size()) {
+                room.setCurrentPlayerIndex(Math.max(0, room.getPlayers().size() - 1));
             }
+            return;
+        }
+
+        // PLAYING or PAUSED
+        if (room.getPlayers().size() < MIN_PLAYERS) {
+            room.setStatus(GameStatus.PAUSED);
+            room.setMustDrawOrPlay(false);
+            room.setLastDrawnCardId(null);
+            if (room.getCurrentPlayerIndex() >= room.getPlayers().size()) {
+                room.setCurrentPlayerIndex(0);
+            }
+            room.addEvent("Paused — need at least " + MIN_PLAYERS + " players. Reconnect or start a new room.");
+            return;
+        }
+
+        room.setStatus(GameStatus.PLAYING);
+        fixTurnAfterLeave(room, leaveIdx, oldIndex, wasCurrent, direction);
+        skipOfflineTurns(room);
+        room.addEvent("Now " + safeCurrentName(room) + "'s turn");
+    }
+
+    private void fixTurnAfterLeave(Room room, int leaveIdx, int oldIndex,
+                                   boolean wasCurrent, int direction) {
+        int n = room.getPlayers().size();
+        if (n == 0) return;
+
+        if (wasCurrent) {
+            // After removal, the next player in direction lands at:
+            // +1 → index leaveIdx (old leaveIdx+1 shifted down)
+            // -1 → index leaveIdx-1
+            int next;
+            if (direction >= 0) {
+                next = leaveIdx % n;
+            } else {
+                next = leaveIdx - 1;
+                if (next < 0) next = n - 1;
+            }
+            room.setCurrentPlayerIndex(next);
+            room.setMustDrawOrPlay(false);
+            room.setLastDrawnCardId(null);
+        } else if (leaveIdx < oldIndex) {
+            room.setCurrentPlayerIndex(oldIndex - 1);
+        } else if (room.getCurrentPlayerIndex() >= n) {
+            room.setCurrentPlayerIndex(0);
+        }
+    }
+
+    private void maybeResumeFromPause(Room room) {
+        if (room.getStatus() == GameStatus.PAUSED && room.getPlayers().size() >= MIN_PLAYERS) {
+            room.setStatus(GameStatus.PLAYING);
+            skipOfflineTurns(room);
+            room.addEvent("Resumed! " + safeCurrentName(room) + "'s turn");
+        }
+    }
+
+    /** If current player is offline, advance until an online player or full loop. */
+    private void skipOfflineTurns(Room room) {
+        if (room.getStatus() != GameStatus.PLAYING) return;
+        int n = room.getPlayers().size();
+        if (n == 0) return;
+        for (int i = 0; i < n; i++) {
+            Player cur = room.getCurrentPlayer();
+            if (cur != null && cur.isConnected()) return;
+            if (cur != null) {
+                room.addEvent("Skipping offline player " + cur.getName());
+            }
+            advanceTurn(room);
         }
     }
 
@@ -458,6 +650,9 @@ public class GameService {
     }
 
     private void requirePlaying(Room room) {
+        if (room.getStatus() == GameStatus.PAUSED) {
+            throw new GameException("Game paused — waiting for players to reconnect");
+        }
         if (room.getStatus() != GameStatus.PLAYING) {
             throw new GameException("Game is not in progress");
         }
@@ -473,9 +668,22 @@ public class GameService {
     private Room requireRoom(String code) {
         Room room = rooms.get(code);
         if (room == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Room not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Room not found — check the code or it may have expired");
         }
         return room;
+    }
+
+    public static String normalizeCode(String raw) {
+        if (raw == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Room code required");
+        }
+        String code = raw.trim().toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+        if (code.length() != 6) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Room code must be 6 characters");
+        }
+        return code;
     }
 
     private String generateUniqueCode() {
@@ -517,6 +725,11 @@ public class GameService {
         return card.getColor() + " " + card.getType().name().replace('_', ' ');
     }
 
+    private String safeCurrentName(Room room) {
+        Player p = room.getCurrentPlayer();
+        return p != null ? p.getName() : "someone";
+    }
+
     public GameStateView toView(Room room, String viewerId) {
         GameStateView view = new GameStateView();
         view.setRoomCode(room.getCode());
@@ -535,6 +748,11 @@ public class GameService {
         view.setLastDrawnCardId(
                 view.isMustDrawOrPlay() ? room.getLastDrawnCardId() : null);
 
+        if (room.getStatus() == GameStatus.PAUSED) {
+            view.setMessage("Game paused — waiting for players to reconnect (need "
+                    + MIN_PLAYERS + "+)");
+        }
+
         Player current = room.getCurrentPlayer();
         List<PlayerView> players = new ArrayList<>();
         for (Player p : room.getPlayers()) {
@@ -546,7 +764,7 @@ public class GameService {
         }
         view.setPlayers(players);
 
-        Player you = room.findPlayer(viewerId);
+        Player you = viewerId == null ? null : room.findPlayer(viewerId);
         if (you != null) {
             view.setYourHand(new ArrayList<>(you.getHand()));
             view.setYourTurn(current != null && current.getId().equals(viewerId)

@@ -1,10 +1,7 @@
 package com.unoparty.controller;
 
-import com.unoparty.dto.CreateRoomRequest;
-import com.unoparty.dto.GameStateView;
-import com.unoparty.dto.JoinResponse;
-import com.unoparty.dto.JoinRoomRequest;
-import com.unoparty.dto.PlayerView;
+import com.unoparty.dto.*;
+import com.unoparty.presence.PresenceService;
 import com.unoparty.service.GameService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -19,10 +16,13 @@ public class RoomController {
 
     private final GameService gameService;
     private final SimpMessagingTemplate messaging;
+    private final PresenceService presence;
 
-    public RoomController(GameService gameService, SimpMessagingTemplate messaging) {
+    public RoomController(GameService gameService, SimpMessagingTemplate messaging,
+                          PresenceService presence) {
         this.gameService = gameService;
         this.messaging = messaging;
+        this.presence = presence;
     }
 
     @GetMapping("/health")
@@ -33,8 +33,7 @@ public class RoomController {
     @PostMapping("/rooms")
     public JoinResponse createRoom(@Valid @RequestBody CreateRoomRequest request) {
         GameService.JoinResult result = gameService.createRoom(request.getDisplayName());
-        return new JoinResponse(result.playerId(), result.roomCode(), result.displayName(),
-                result.host(), result.gameState());
+        return toResponse(result);
     }
 
     @PostMapping("/rooms/{code}/join")
@@ -42,8 +41,27 @@ public class RoomController {
                                  @Valid @RequestBody JoinRoomRequest request) {
         GameService.JoinResult result = gameService.joinRoom(code, request.getDisplayName());
         broadcastPersonalized(result.roomCode());
-        return new JoinResponse(result.playerId(), result.roomCode(), result.displayName(),
-                result.host(), result.gameState());
+        return toResponse(result);
+    }
+
+    @PostMapping("/rooms/{code}/rejoin")
+    public JoinResponse rejoinRoom(@PathVariable String code,
+                                   @Valid @RequestBody RejoinRoomRequest request) {
+        GameService.JoinResult result = gameService.rejoinRoom(code, request.getPlayerId());
+        broadcastPersonalized(result.roomCode());
+        return toResponse(result);
+    }
+
+    @PostMapping("/rooms/{code}/leave")
+    public ResponseEntity<GameStateView> leaveRoom(@PathVariable String code,
+                                                   @Valid @RequestBody LeaveRoomRequest request) {
+        String normalized = GameService.normalizeCode(code);
+        GameStateView view = gameService.leaveRoomRest(code, request.getPlayerId());
+        presence.clearPlayer(normalized, request.getPlayerId());
+        if (gameService.roomExists(normalized)) {
+            broadcastPersonalized(normalized);
+        }
+        return ResponseEntity.ok(view);
     }
 
     @GetMapping("/rooms/{code}")
@@ -51,6 +69,11 @@ public class RoomController {
             @PathVariable String code,
             @RequestParam(required = false) String playerId) {
         return ResponseEntity.ok(gameService.getStateForPlayer(code, playerId));
+    }
+
+    private JoinResponse toResponse(GameService.JoinResult result) {
+        return new JoinResponse(result.playerId(), result.roomCode(), result.displayName(),
+                result.host(), result.gameState());
     }
 
     private void broadcastPersonalized(String code) {

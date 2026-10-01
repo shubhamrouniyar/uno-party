@@ -14,6 +14,15 @@ Fun **online multiplayer UNO-like** card game — no login. Create or join a roo
 6. When you have 1 card left, hit **UNO!** — if you forget, others can **Catch** you for +2 cards.
 7. First to empty their hand wins. Host can start a **rematch**.
 
+## Resilience
+
+- Session persisted in `localStorage` (room code + playerId + name); refresh auto-rejoins the same seat.
+- STOMP reconnect with exponential backoff + 10s heartbeats (server + client).
+- On disconnect: seat kept ~60s (marked offline); then removed and the game continues (or **pauses** if &lt;2 players).
+- Mid-game leave: turn skipped cleanly, cards returned to the deck, host transferred if needed.
+- Join errors are explicit (full / started / bad code / duplicate name). Late join is **lobby-only**.
+- HTTP `/api/health` ping from the SPA keeps idle proxies happier.
+
 ## Structure
 
 ```
@@ -33,9 +42,11 @@ Fun **online multiplayer UNO-like** card game — no login. Create or join a roo
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/health` | Health check |
+| GET | `/api/health` | Health / keep-alive |
 | POST | `/api/rooms` | Create room `{ displayName }` → playerId + roomCode |
-| POST | `/api/rooms/{code}/join` | Join `{ displayName }` |
+| POST | `/api/rooms/{code}/join` | Join `{ displayName }` (lobby only) |
+| POST | `/api/rooms/{code}/rejoin` | Rejoin seat `{ playerId }` |
+| POST | `/api/rooms/{code}/leave` | Leave `{ playerId }` (reliable vs WS-only) |
 | GET | `/api/rooms/{code}?playerId=` | Snapshot of room / hand |
 
 ### WebSocket (STOMP)
@@ -49,7 +60,8 @@ Fun **online multiplayer UNO-like** card game — no login. Create or join a roo
 ### Room lifecycle
 
 - In-memory game state (no database).
-- Idle rooms are purged after ~45 minutes of inactivity.
+- Disconnect grace ~60s, then seat removed.
+- Idle rooms purged after ~45 minutes of inactivity.
 - CORS allows `localhost` / `127.0.0.1` and `*.netlify.app`.
 
 ## Prerequisites
@@ -68,14 +80,6 @@ mvn spring-boot:run
 
 API / WS: http://localhost:8080 · ws://localhost:8080/ws
 
-Or Docker:
-
-```bash
-cd backend
-docker build -t uno-party-backend .
-docker run --rm -p 8080:8080 -e PORT=8080 uno-party-backend
-```
-
 ### Frontend
 
 ```bash
@@ -84,8 +88,6 @@ npm install
 cp .env.example .env   # optional
 npm run dev
 ```
-
-Open the Vite URL (usually http://localhost:5173).
 
 Env vars:
 
@@ -106,7 +108,7 @@ Env vars:
 2. Build uses `netlify.toml` (`npm run build` → `dist`, SPA redirect).
 3. Set `VITE_API_URL` to the Railway HTTPS URL and `VITE_WS_URL` to `wss://<railway-host>/ws`.
 
-> Deploy is **intentionally not done** in the initial PR — wait for explicit approval.
+> Deploy is **intentionally not done** until explicit approval.
 
 ## License
 

@@ -1,6 +1,7 @@
 export type CardColor = 'RED' | 'YELLOW' | 'GREEN' | 'BLUE' | 'WILD';
 export type CardType = 'NUMBER' | 'SKIP' | 'REVERSE' | 'DRAW_TWO' | 'WILD' | 'WILD_DRAW_FOUR';
-export type GameStatus = 'LOBBY' | 'PLAYING' | 'FINISHED';
+export type GameStatus = 'LOBBY' | 'PLAYING' | 'PAUSED' | 'FINISHED';
+export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 
 export interface Card {
   id: string;
