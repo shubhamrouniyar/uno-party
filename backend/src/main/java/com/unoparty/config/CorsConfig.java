@@ -25,6 +25,11 @@ public class CorsConfig {
                         .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
                         .allowCredentials(true);
+                // Health is useful for keep-alive pings from the SPA
+                registry.addMapping("/api/health")
+                        .allowedOriginPatterns(ORIGIN_PATTERNS)
+                        .allowedMethods("GET", "OPTIONS")
+                        .allowedHeaders("*");
             }
         };
     }

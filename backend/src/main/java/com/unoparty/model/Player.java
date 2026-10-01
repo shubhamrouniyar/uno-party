@@ -2,6 +2,7 @@ package com.unoparty.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -12,6 +13,7 @@ public class Player {
     private boolean connected = true;
     private boolean calledUno = false;
     private boolean host = false;
+    private Instant disconnectedAt;
 
     public Player(String id, String name) {
         this.id = id;
@@ -41,6 +43,9 @@ public class Player {
 
     public void setConnected(boolean connected) {
         this.connected = connected;
+        if (connected) {
+            this.disconnectedAt = null;
+        }
     }
 
     public boolean isCalledUno() {
@@ -57,5 +62,23 @@ public class Player {
 
     public void setHost(boolean host) {
         this.host = host;
+    }
+
+    public Instant getDisconnectedAt() {
+        return disconnectedAt;
+    }
+
+    public void setDisconnectedAt(Instant disconnectedAt) {
+        this.disconnectedAt = disconnectedAt;
+    }
+
+    public void markDisconnected(Instant when) {
+        this.connected = false;
+        this.disconnectedAt = when;
+    }
+
+    public void markConnected() {
+        this.connected = true;
+        this.disconnectedAt = null;
     }
 }

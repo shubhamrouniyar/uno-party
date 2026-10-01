@@ -13,11 +13,12 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
   const [mode, setMode] = useState<'menu' | 'create' | 'join'>('menu');
 
   const trimmed = name.trim();
+  const codeOk = /^[A-Z0-9]{6}$/.test(code.trim().toUpperCase());
 
   return (
     <div className="home">
       <div className="hero-card">
-        <div className="logo-row">
+        <div className="logo-row" aria-hidden>
           <span className="logo-badge r">U</span>
           <span className="logo-badge y">N</span>
           <span className="logo-badge g">O</span>
@@ -53,6 +54,7 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
                 maxLength={20}
                 placeholder="Your name"
                 autoFocus
+                autoComplete="nickname"
                 required
               />
             </label>
@@ -70,7 +72,7 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (trimmed && code.trim()) onJoin(code.trim().toUpperCase(), trimmed);
+              if (trimmed && codeOk) onJoin(code.trim().toUpperCase(), trimmed);
             }}
           >
             <label>
@@ -81,6 +83,7 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
                 maxLength={20}
                 placeholder="Your name"
                 autoFocus
+                autoComplete="nickname"
                 required
               />
             </label>
@@ -88,25 +91,28 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
               Room code
               <input
                 value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
                 maxLength={6}
                 placeholder="ABC123"
+                inputMode="text"
+                autoCapitalize="characters"
+                spellCheck={false}
                 required
               />
             </label>
             <div className="form-row">
               <button type="button" className="btn ghost" onClick={() => setMode('menu')}>Back</button>
-              <button type="submit" className="btn primary" disabled={busy || !trimmed || !code.trim()}>
+              <button type="submit" className="btn primary" disabled={busy || !trimmed || !codeOk}>
                 {busy ? 'Joining…' : 'Join'}
               </button>
             </div>
           </form>
         )}
 
-        {error && <p className="error-msg">{error}</p>}
+        {error && <p className="error-msg" role="alert">{error}</p>}
 
         <ul className="rules-mini">
-          <li>2–6 players</li>
+          <li>2–6 players · seats survive refresh for ~60s</li>
           <li>Match color or number · Wilds change color</li>
           <li>Call UNO at 1 card — or get caught +2!</li>
         </ul>
