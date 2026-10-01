@@ -30,6 +30,12 @@ public class WebSocketPresenceListener {
     public void onDisconnect(SessionDisconnectEvent event) {
         String sessionId = event.getSessionId();
         presence.unbind(sessionId).ifPresent(seat -> {
+            // Reconnect race: new STOMP session may already be bound — do NOT mark offline.
+            if (presence.hasActiveSession(seat.roomCode(), seat.playerId())) {
+                log.info("WS disconnect ignored (still active) session={} room={} player={}",
+                        sessionId, seat.roomCode(), seat.playerId());
+                return;
+            }
             log.info("WS disconnect session={} room={} player={}", sessionId, seat.roomCode(), seat.playerId());
             boolean changed = gameService.markDisconnected(seat.roomCode(), seat.playerId());
             if (changed) {

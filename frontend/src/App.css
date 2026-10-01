@@ -410,3 +410,23 @@
   }
   .event-log { max-height: 90px; }
 }
+
+.server-hint {
+  font-size: 0.85rem;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+.server-hint.warn {
+  background: rgba(241, 196, 15, 0.15);
+  color: #f1c40f;
+}
+.server-hint.ok {
+  background: rgba(39, 174, 96, 0.15);
+  color: #2ecc71;
+}
+.busy-hint {
+  color: #aab;
+  font-size: 0.9rem;
+  margin: 8px 0 0;
+}

@@ -18,7 +18,7 @@ Fun **online multiplayer UNO-like** card game — no login. Create or join a roo
 
 - Session persisted in `localStorage` (room code + playerId + name); refresh auto-rejoins the same seat.
 - STOMP reconnect with exponential backoff + 10s heartbeats (server + client).
-- On disconnect: seat kept ~60s (marked offline); then removed and the game continues (or **pauses** if &lt;2 players).
+- On disconnect: seat kept ~3 minutes (marked offline); then removed and the game continues (or **pauses** if &lt;2 players).
 - Mid-game leave: turn skipped cleanly, cards returned to the deck, host transferred if needed.
 - Join errors are explicit (full / started / bad code / duplicate name). Late join is **lobby-only**.
 - HTTP `/api/health` ping from the SPA keeps idle proxies happier.
@@ -60,7 +60,7 @@ Fun **online multiplayer UNO-like** card game — no login. Create or join a roo
 ### Room lifecycle
 
 - In-memory game state (no database).
-- Disconnect grace ~60s, then seat removed.
+- Disconnect grace ~3 minutes, then seat removed.
 - Idle rooms purged after ~45 minutes of inactivity.
 - CORS allows `localhost` / `127.0.0.1` and `*.netlify.app`.
 

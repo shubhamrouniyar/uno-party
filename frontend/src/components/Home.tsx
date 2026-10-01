@@ -2,12 +2,14 @@ import { useState } from 'react';
 
 interface Props {
   busy: boolean;
+  busyHint: string | null;
   error: string | null;
+  serverReady: boolean | null;
   onCreate: (name: string) => void;
   onJoin: (code: string, name: string) => void;
 }
 
-export function Home({ busy, error, onCreate, onJoin }: Props) {
+export function Home({ busy, busyHint, error, serverReady, onCreate, onJoin }: Props) {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [mode, setMode] = useState<'menu' | 'create' | 'join'>('menu');
@@ -27,6 +29,15 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
         <h1>UNO Party</h1>
         <p className="tagline">Online multiplayer · no login · just a room code</p>
 
+        {serverReady === false && (
+          <p className="server-hint warn" role="status">
+            Server may be waking up — create/join can take up to a minute the first time.
+          </p>
+        )}
+        {serverReady === true && mode === 'menu' && (
+          <p className="server-hint ok" role="status">Server ready</p>
+        )}
+
         {mode === 'menu' && (
           <div className="menu-actions">
             <button type="button" className="btn primary big" onClick={() => setMode('create')}>
@@ -43,7 +54,7 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (trimmed) onCreate(trimmed);
+              if (trimmed && !busy) onCreate(trimmed);
             }}
           >
             <label>
@@ -56,12 +67,13 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
                 autoFocus
                 autoComplete="nickname"
                 required
+                disabled={busy}
               />
             </label>
             <div className="form-row">
-              <button type="button" className="btn ghost" onClick={() => setMode('menu')}>Back</button>
+              <button type="button" className="btn ghost" onClick={() => setMode('menu')} disabled={busy}>Back</button>
               <button type="submit" className="btn primary" disabled={busy || !trimmed}>
-                {busy ? 'Creating…' : 'Create'}
+                {busy ? (busyHint || 'Creating…') : 'Create'}
               </button>
             </div>
           </form>
@@ -72,7 +84,7 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (trimmed && codeOk) onJoin(code.trim().toUpperCase(), trimmed);
+              if (trimmed && codeOk && !busy) onJoin(code.trim().toUpperCase(), trimmed);
             }}
           >
             <label>
@@ -85,6 +97,7 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
                 autoFocus
                 autoComplete="nickname"
                 required
+                disabled={busy}
               />
             </label>
             <label>
@@ -98,21 +111,23 @@ export function Home({ busy, error, onCreate, onJoin }: Props) {
                 autoCapitalize="characters"
                 spellCheck={false}
                 required
+                disabled={busy}
               />
             </label>
             <div className="form-row">
-              <button type="button" className="btn ghost" onClick={() => setMode('menu')}>Back</button>
+              <button type="button" className="btn ghost" onClick={() => setMode('menu')} disabled={busy}>Back</button>
               <button type="submit" className="btn primary" disabled={busy || !trimmed || !codeOk}>
-                {busy ? 'Joining…' : 'Join'}
+                {busy ? (busyHint || 'Joining…') : 'Join'}
               </button>
             </div>
           </form>
         )}
 
+        {busy && busyHint && <p className="busy-hint" role="status">{busyHint}</p>}
         {error && <p className="error-msg" role="alert">{error}</p>}
 
         <ul className="rules-mini">
-          <li>2–6 players · seats survive refresh for ~60s</li>
+          <li>2–6 players · seats survive refresh / blips for ~3 min</li>
           <li>Match color or number · Wilds change color</li>
           <li>Call UNO at 1 card — or get caught +2!</li>
         </ul>
