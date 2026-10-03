@@ -1,7 +1,5 @@
 package com.unoparty.presence;
 
-import com.unoparty.dto.GameStateView;
-import com.unoparty.dto.PlayerView;
 import com.unoparty.service.GameService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,13 +44,9 @@ public class WebSocketPresenceListener {
 
     private void broadcast(String code) {
         try {
-            GameStateView probe = gameService.getStateForPlayer(code, null);
-            if (probe.getPlayers() == null) return;
-            for (PlayerView pv : probe.getPlayers()) {
-                GameStateView personal = gameService.getStateForPlayer(code, pv.getId());
-                messaging.convertAndSend("/topic/room/" + code + "/player/" + pv.getId(), personal);
+            for (var snap : gameService.addressedStates(code)) {
+                messaging.convertAndSend("/topic/room/" + code + "/player/" + snap.playerId(), snap.view());
             }
-            messaging.convertAndSend("/topic/room/" + code, probe);
         } catch (Exception e) {
             log.debug("Broadcast after disconnect failed for {}: {}", code, e.getMessage());
         }

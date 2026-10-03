@@ -33,7 +33,8 @@ public class RoomController {
                 "status", "ok",
                 "service", "uno-party",
                 "uptimeMs", System.currentTimeMillis() - STARTED_AT_MS,
-                "rooms", gameService.allRooms().size()
+                "rooms", gameService.allRooms().size(),
+                "turnEngine", "sequential-v2"
         );
     }
 
@@ -90,12 +91,8 @@ public class RoomController {
     }
 
     private void broadcastPersonalized(String code) {
-        GameStateView probe = gameService.getStateForPlayer(code, null);
-        if (probe.getPlayers() == null) return;
-        for (PlayerView pv : probe.getPlayers()) {
-            GameStateView personal = gameService.getStateForPlayer(code, pv.getId());
-            messaging.convertAndSend("/topic/room/" + code + "/player/" + pv.getId(), personal);
+        for (var snap : gameService.addressedStates(code)) {
+            messaging.convertAndSend("/topic/room/" + code + "/player/" + snap.playerId(), snap.view());
         }
-        messaging.convertAndSend("/topic/room/" + code, probe);
     }
 }

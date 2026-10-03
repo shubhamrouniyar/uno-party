@@ -1,8 +1,11 @@
 package com.unoparty.model;
 
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Room {
@@ -22,6 +25,9 @@ public class Room {
     private String lastDrawnCardId; // card just drawn that may be playable
     private Instant lastActivity = Instant.now();
     private String createdBy;
+    private long stateVersion = 0;
+    private final ArrayDeque<String> actionOrder = new ArrayDeque<>();
+    private final Set<String> actionIds = new HashSet<>();
 
     public Room(String code) {
         this.code = code;
@@ -140,6 +146,33 @@ public class Room {
 
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public long getStateVersion() {
+        return stateVersion;
+    }
+
+    public long bumpState() {
+        stateVersion += 1;
+        return stateVersion;
+    }
+
+    /**
+     * @return true if this action id should be processed. Blank ids are always processed.
+     *         Repeats of a seen id are duplicates and must be ignored.
+     */
+    public boolean consumeActionId(String actionId) {
+        if (actionId == null || actionId.isBlank()) {
+            return true;
+        }
+        if (!actionIds.add(actionId)) {
+            return false;
+        }
+        actionOrder.addLast(actionId);
+        while (actionOrder.size() > 200) {
+            actionIds.remove(actionOrder.removeFirst());
+        }
+        return true;
     }
 
     public Player getCurrentPlayer() {

@@ -8,6 +8,8 @@ public class GameAction {
     private String cardId;
     private CardColor chosenColor;
     private String targetPlayerId; // for UNO challenge
+    /** Client idempotency key. Duplicate deliveries are ignored. */
+    private String actionId;
 
     public String getPlayerId() {
         return playerId;
@@ -47,5 +49,13 @@ public class GameAction {
 
     public void setTargetPlayerId(String targetPlayerId) {
         this.targetPlayerId = targetPlayerId;
+    }
+
+    public String getActionId() {
+        return actionId;
+    }
+
+    public void setActionId(String actionId) {
+        this.actionId = actionId;
     }
 }

@@ -136,11 +136,12 @@ export async function joinRoom(code: string, displayName: string): Promise<JoinR
 
 export async function rejoinRoom(code: string, playerId: string): Promise<JoinResponse> {
   const normalized = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  await wakeServer();
   return fetchJson<JoinResponse>(`/api/rooms/${encodeURIComponent(normalized)}/rejoin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ playerId }),
-  }, { attempts: 3, timeoutMs: REQUEST_TIMEOUT_MS });
+  }, { attempts: 4, timeoutMs: REQUEST_TIMEOUT_MS });
 }
 
 export async function leaveRoom(code: string, playerId: string): Promise<GameStateView> {

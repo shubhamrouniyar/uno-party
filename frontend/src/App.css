@@ -212,8 +212,9 @@
 
 /* ---- cards ---- */
 .uno-card {
-  width: 72px;
-  height: 108px;
+  width: 92px;
+  height: 138px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
   border-radius: 10px;
   border: 3px solid #fff;
   color: #fff;
@@ -245,7 +246,7 @@
   display: flex; flex-direction: column; align-items: center; justify-content: center;
 }
 .card-big {
-  font-size: 1.6rem; font-weight: 900;
+  font-size: 2rem; font-weight: 900;
   background: rgba(255,255,255,0.92); color: #222;
   width: 42px; height: 42px; border-radius: 50%;
   display: grid; place-items: center;
@@ -288,8 +289,8 @@
 .winner-modal h2 { margin-top: 0; }
 
 @media (max-width: 520px) {
-  .uno-card { width: 58px; height: 88px; }
-  .card-big { width: 34px; height: 34px; font-size: 1.2rem; }
+  .uno-card { width: 76px; height: 114px; }
+  .card-big { width: 40px; height: 40px; font-size: 1.35rem; }
   .hand { gap: 6px; }
   .table { gap: 16px; }
 }
@@ -429,4 +430,73 @@
   color: #aab;
   font-size: 0.9rem;
   margin: 8px 0 0;
+}
+
+.turn-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 10px;
+}
+.turn-banner .turn-name {
+  font-size: 1.25rem;
+  letter-spacing: 0.01em;
+}
+.turn-banner.yours {
+  background: linear-gradient(90deg, transparent, rgba(241,196,15,0.38), transparent);
+  color: #ffe58a;
+}
+.dir-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #d6e4ff;
+  background: rgba(52, 152, 219, 0.18);
+  border: 1px solid rgba(52, 152, 219, 0.35);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+.dir-pill.ccw {
+  color: #f5d0fe;
+  background: rgba(142, 68, 173, 0.22);
+  border-color: rgba(142, 68, 173, 0.4);
+}
+.dir-arrow {
+  display: inline-block;
+  font-size: 1.15rem;
+  animation: spin-dir 2.8s linear infinite;
+}
+.dir-pill.ccw .dir-arrow { animation-direction: reverse; }
+@keyframes spin-dir {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.opp.current {
+  animation: seat-pulse 1.4s ease-in-out infinite;
+}
+.opp.self.current { opacity: 1; }
+@keyframes seat-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(241,196,15,0.45); }
+  50% { box-shadow: 0 0 18px 2px rgba(241,196,15,0.55); }
+}
+.discard-pile .uno-card {
+  animation: card-in 0.28s ease-out;
+}
+@keyframes card-in {
+  from { transform: translateY(10px) scale(0.92); opacity: 0.4; }
+  to { transform: none; opacity: 1; }
+}
+.hand .uno-card.clickable:active {
+  transform: translateY(-16px) scale(1.04);
+}
+@media (max-width: 520px) {
+  .turn-banner .turn-name { font-size: 1.05rem; }
+  .app-shell { padding: 8px; }
+  .hand { scroll-snap-type: x mandatory; }
+  .hand .uno-card { scroll-snap-align: center; }
 }

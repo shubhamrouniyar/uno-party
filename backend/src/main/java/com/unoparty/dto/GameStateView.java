@@ -24,6 +24,11 @@ public class GameStateView {
     private List<String> eventLog;
     private String error;
     private String message;
+    /** Authoritative seat. Clients must render this, never guess the next player. */
+    private String currentPlayerId;
+    private String currentPlayerName;
+    /** Monotonic room revision. Clients drop older revisions. */
+    private long stateVersion;
 
     public String getRoomCode() { return roomCode; }
     public void setRoomCode(String roomCode) { this.roomCode = roomCode; }
@@ -75,4 +80,13 @@ public class GameStateView {
 
     public String getMessage() { return message; }
     public void setMessage(String message) { this.message = message; }
+
+    public String getCurrentPlayerId() { return currentPlayerId; }
+    public void setCurrentPlayerId(String currentPlayerId) { this.currentPlayerId = currentPlayerId; }
+
+    public String getCurrentPlayerName() { return currentPlayerName; }
+    public void setCurrentPlayerName(String currentPlayerName) { this.currentPlayerName = currentPlayerName; }
+
+    public long getStateVersion() { return stateVersion; }
+    public void setStateVersion(long stateVersion) { this.stateVersion = stateVersion; }
 }

@@ -23,6 +23,7 @@ export default function App() {
   const [restoring, setRestoring] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const [serverReady, setServerReady] = useState<boolean | null>(null);
+  const [pendingPlayId, setPendingPlayId] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const leavingRef = useRef(false);
 
@@ -53,9 +54,9 @@ export default function App() {
         return;
       }
       let lastMsg = 'Could not restore session';
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
         try {
-          if (attempt > 0) await wakeServer();
+          await wakeServer();
           const res = await rejoinRoom(saved.roomCode, saved.playerId);
           if (cancelled) return;
           applySession({
@@ -117,6 +118,7 @@ export default function App() {
   }, [session, state]);
 
   const onState = useCallback((s: GameStateView) => {
+    setPendingPlayId(null);
     setState(s);
     if (s.error) {
       setError(s.error);
@@ -263,7 +265,17 @@ export default function App() {
       state={state}
       connected={status === 'connected'}
       connectionStatus={status}
-      onPlay={(cardId, color?: CardColor) => sendAction('PLAY', { cardId, chosenColor: color })}
+      pendingPlayId={pendingPlayId}
+      onPlay={(cardId, color?: CardColor) => {
+        const yours = state.status === 'PLAYING' && (
+          state.currentPlayerId
+            ? state.currentPlayerId === session.playerId
+            : !!state.yourTurn
+        );
+        // Optimistic only hides the card. Turn stays on the server currentPlayerId.
+        const sent = sendAction('PLAY', { cardId, chosenColor: color });
+        if (sent && yours) setPendingPlayId(cardId);
+      }}
       onDraw={() => sendAction('DRAW')}
       onPass={() => sendAction('PASS')}
       onCallUno={() => sendAction('CALL_UNO')}

@@ -9,6 +9,7 @@ interface Props {
   state: GameStateView;
   connected: boolean;
   connectionStatus: ConnectionStatus;
+  pendingPlayId?: string | null;
   onPlay: (cardId: string, color?: CardColor) => void;
   onDraw: () => void;
   onPass: () => void;
@@ -34,7 +35,7 @@ function canPlayCard(card: Card, state: GameStateView): boolean {
 }
 
 export function GameBoard({
-  session, state, connectionStatus, onPlay, onDraw, onPass, onCallUno, onChallengeUno, onRematch, onLeave,
+  session, state, connectionStatus, pendingPlayId, onPlay, onDraw, onPass, onCallUno, onChallengeUno, onRematch, onLeave,
 }: Props) {
   const [pendingWild, setPendingWild] = useState<Card | null>(null);
   const [localToast, setLocalToast] = useState<string | null>(null);
@@ -42,14 +43,23 @@ export function GameBoard({
 
   const you = state.players.find((p) => p.id === session.playerId);
   const isHost = you?.host ?? session.host;
+  // Authoritative turn comes only from the server. Never infer the next seat locally.
+  const currentId = state.currentPlayerId
+    ?? (state.players.find((p) => p.current)?.id ?? null);
+  const currentName = state.currentPlayerName
+    ?? state.players.find((p) => p.id === currentId)?.name
+    ?? null;
+  const yourTurn = state.status === 'PLAYING' && !!currentId && currentId === session.playerId;
+  const hand = (state.yourHand || []).filter((c) => c.id !== pendingPlayId);
+  const viewForPlay: GameStateView = { ...state, yourTurn, yourHand: hand };
 
   const playableIds = useMemo(() => {
     const set = new Set<string>();
-    for (const c of state.yourHand || []) {
-      if (canPlayCard(c, state)) set.add(c.id);
+    for (const c of hand) {
+      if (canPlayCard(c, viewForPlay)) set.add(c.id);
     }
     return set;
-  }, [state]);
+  }, [state, pendingPlayId, yourTurn]);
 
   const handleCardClick = (card: Card) => {
     if (!playableIds.has(card.id)) {
@@ -113,7 +123,7 @@ export function GameBoard({
             key={p.id}
             className={[
               'opp',
-              p.current ? 'current' : '',
+              p.id === currentId ? 'current' : '',
               p.id === session.playerId ? 'self' : '',
               !p.connected ? 'offline' : '',
             ].filter(Boolean).join(' ')}
@@ -142,7 +152,7 @@ export function GameBoard({
         <button
           type="button"
           className="pile draw-pile"
-          disabled={!state.yourTurn || state.mustDrawOrPlay || state.status !== 'PLAYING'}
+          disabled={!yourTurn || state.mustDrawOrPlay || state.status !== 'PLAYING'}
           onClick={onDraw}
         >
           <UnoCard
@@ -157,33 +167,35 @@ export function GameBoard({
         </div>
       </section>
 
-      {state.yourTurn && state.status === 'PLAYING' && (
-        <div className="turn-banner pulse">
-          Your turn!{state.mustDrawOrPlay ? ' Play the drawn card or pass.' : ''}
-        </div>
-      )}
-      {!state.yourTurn && state.status === 'PLAYING' && (
-        <div className="turn-banner waiting-turn">
-          Waiting for {state.players.find((p) => p.current)?.name || 'someone'}…
+      {state.status === 'PLAYING' && (
+        <div className={`turn-banner ${yourTurn ? 'pulse yours' : 'waiting-turn'}`} role="status">
+          <span className={`dir-pill ${state.direction < 0 ? 'ccw' : 'cw'}`} title="Play direction">
+            <span className="dir-arrow" aria-hidden>{state.direction < 0 ? '↺' : '↻'}</span>
+            {state.direction < 0 ? 'Counter-clockwise' : 'Clockwise'}
+          </span>
+          <span className="turn-name">
+            {yourTurn ? 'Your turn' : `${currentName || 'Someone'}\'s turn`}
+            {yourTurn && state.mustDrawOrPlay ? ' — play the drawn card or pass' : ''}
+          </span>
         </div>
       )}
 
       <section className="hand-area">
         <div className="hand">
-          {(state.yourHand || []).map((c) => (
+          {hand.map((c) => (
             <UnoCard
               key={c.id}
               card={c}
               playable={playableIds.has(c.id)}
-              onClick={state.yourTurn && state.status === 'PLAYING' ? () => handleCardClick(c) : undefined}
+              onClick={yourTurn ? () => handleCardClick(c) : undefined}
             />
           ))}
         </div>
         <div className="hand-actions">
-          {state.yourTurn && !state.mustDrawOrPlay && state.status === 'PLAYING' && (
+          {yourTurn && !state.mustDrawOrPlay && (
             <button type="button" className="btn secondary" onClick={onDraw}>Draw</button>
           )}
-          {state.mustDrawOrPlay && (
+          {yourTurn && state.mustDrawOrPlay && (
             <button type="button" className="btn secondary" onClick={onPass}>Pass</button>
           )}
           {(state.yourHand?.length === 1 || state.yourHand?.length === 2) && state.status === 'PLAYING' && (
