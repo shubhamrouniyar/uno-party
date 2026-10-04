@@ -4,6 +4,8 @@ import com.unoparty.dto.GameAction;
 import com.unoparty.dto.GameStateView;
 import com.unoparty.dto.PlayerView;
 import com.unoparty.model.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -16,6 +18,8 @@ import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class GameService {
+
+    private static final Logger log = LoggerFactory.getLogger(GameService.class);
 
     private static final int MIN_PLAYERS = 2;
     private static final int MAX_PLAYERS = 6;
@@ -39,6 +43,7 @@ public class GameService {
         room.touch();
         rooms.put(code, room);
         room.addEvent(host.getName() + " created the room");
+        room.bumpState();
         return new JoinResult(playerId, code, host.getName(), true, toView(room, playerId));
     }
 
@@ -66,6 +71,7 @@ public class GameService {
         room.getPlayers().add(player);
         room.touch();
         room.addEvent(name + " joined the party");
+        room.bumpState();
         return new JoinResult(playerId, room.getCode(), name, false, toView(room, playerId));
     }
 
@@ -90,6 +96,9 @@ public class GameService {
             room.addEvent(player.getName() + " reconnected");
         }
         maybeResumeFromPause(room);
+        room.bumpState();
+        log.info("rejoin room={} playerId={} currentPlayerId={} index={} (turn not reset)",
+                room.getCode(), playerId, currentId(room), room.getCurrentPlayerIndex());
         return new JoinResult(playerId, room.getCode(), player.getName(), player.isHost(),
                 toView(room, playerId));
     }
@@ -101,7 +110,11 @@ public class GameService {
         if (actor == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "You are not in this room");
         }
+        long versionBefore = room.getStateVersion();
         leaveRoom(room, actor);
+        if (rooms.containsKey(code) && room.getStateVersion() == versionBefore) {
+            room.bumpState();
+        }
         if (!rooms.containsKey(code)) {
             GameStateView empty = new GameStateView();
             empty.setRoomCode(code);
@@ -115,9 +128,28 @@ public class GameService {
         return toView(room, playerId);
     }
 
-    public GameStateView getStateForPlayer(String rawCode, String playerId) {
+    public synchronized GameStateView getStateForPlayer(String rawCode, String playerId) {
         Room room = requireRoom(normalizeCode(rawCode));
         return toView(room, playerId);
+    }
+
+    /**
+     * All per-player views captured under one lock so every client sees the same
+     * currentPlayerId and stateVersion (no torn turn broadcasts).
+     */
+    public synchronized List<AddressedState> addressedStates(String rawCode) {
+        Room room = rooms.get(normalizeCode(rawCode));
+        if (room == null) return List.of();
+        List<AddressedState> out = new ArrayList<>();
+        for (Player p : room.getPlayers()) {
+            out.add(new AddressedState(p.getId(), toView(room, p.getId())));
+        }
+        return out;
+    }
+
+    /** Test-only access to the live room (same package). */
+    Room roomForTest(String rawCode) {
+        return rooms.get(normalizeCode(rawCode));
     }
 
     public synchronized GameStateView handleAction(String rawCode, GameAction action) {
@@ -130,6 +162,11 @@ public class GameService {
         Player actor = room.findPlayer(action.getPlayerId());
         if (actor == null) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You are not in this room");
+        }
+        if (!room.consumeActionId(action.getActionId())) {
+            log.info("duplicate action ignored room={} player={} type={} actionId={} currentPlayerId={}",
+                    code, action.getPlayerId(), action.getType(), action.getActionId(), currentId(room));
+            return toView(room, action.getPlayerId());
         }
         // Touch presence — any successful action implies connected
         actor.markConnected();
@@ -150,6 +187,7 @@ public class GameService {
                 }
             }
         } catch (GameException e) {
+            room.bumpState();
             GameStateView view = toView(room, action.getPlayerId());
             view.setError(e.getMessage());
             return view;
@@ -165,6 +203,11 @@ public class GameService {
             empty.setEventLog(List.of());
             return empty;
         }
+        room.bumpState();
+        log.info("state room={} version={} status={} currentPlayerId={} index={} dir={} players={}",
+                code, room.getStateVersion(), room.getStatus(), currentId(room),
+                room.getCurrentPlayerIndex(), room.getDirection(),
+                room.getPlayers().stream().map(Player::getName).toList());
         return toView(room, action.getPlayerId());
     }
 
@@ -177,6 +220,9 @@ public class GameService {
         p.markDisconnected(Instant.now());
         room.addEvent(p.getName() + " disconnected — seat held briefly");
         room.touch();
+        room.bumpState();
+        log.info("disconnect room={} playerId={} currentPlayerId={} index={} (turn unchanged)",
+                room.getCode(), playerId, currentId(room), room.getCurrentPlayerIndex());
         return true;
     }
 
@@ -186,12 +232,18 @@ public class GameService {
         Player p = room.findPlayer(playerId);
         if (p != null) {
             boolean wasOffline = !p.isConnected();
+            int indexBefore = room.getCurrentPlayerIndex();
+            String turnBefore = currentId(room);
             p.markConnected();
             room.touch();
             if (wasOffline) {
                 room.addEvent(p.getName() + " reconnected");
+                maybeResumeFromPause(room);
+                room.bumpState();
+                log.info("reconnect room={} playerId={} turnBefore={} turnAfter={} index {} -> {} (not reset unless resume skipped offline)",
+                        room.getCode(), playerId, turnBefore, currentId(room),
+                        indexBefore, room.getCurrentPlayerIndex());
             }
-            maybeResumeFromPause(room);
         }
     }
 
@@ -532,6 +584,7 @@ public class GameService {
         }
 
         if (room.getStatus() == GameStatus.LOBBY) {
+            room.bumpState();
             return;
         }
 
@@ -540,6 +593,7 @@ public class GameService {
             if (room.getCurrentPlayerIndex() >= room.getPlayers().size()) {
                 room.setCurrentPlayerIndex(Math.max(0, room.getPlayers().size() - 1));
             }
+            room.bumpState();
             return;
         }
 
@@ -552,6 +606,7 @@ public class GameService {
                 room.setCurrentPlayerIndex(0);
             }
             room.addEvent("Paused — need at least " + MIN_PLAYERS + " players. Reconnect or start a new room.");
+            room.bumpState();
             return;
         }
 
@@ -559,6 +614,9 @@ public class GameService {
         fixTurnAfterLeave(room, leaveIdx, oldIndex, wasCurrent, direction);
         skipOfflineTurns(room);
         room.addEvent("Now " + safeCurrentName(room) + "'s turn");
+        log.info("leave room={} removed={} currentPlayerId={} index={} dir={}",
+                room.getCode(), actor.getId(), currentId(room),
+                room.getCurrentPlayerIndex(), room.getDirection());
     }
 
     private void fixTurnAfterLeave(Room room, int leaveIdx, int oldIndex,
@@ -595,31 +653,55 @@ public class GameService {
         }
     }
 
-    /** If current player is offline, advance until an online player or full loop. */
+    /** If the seated current player is offline, move to the next eligible connected player. */
     private void skipOfflineTurns(Room room) {
         if (room.getStatus() != GameStatus.PLAYING) return;
-        int n = room.getPlayers().size();
-        if (n == 0) return;
-        for (int i = 0; i < n; i++) {
-            Player cur = room.getCurrentPlayer();
-            if (cur != null && cur.isConnected()) return;
-            if (cur != null) {
-                room.addEvent("Skipping offline player " + cur.getName());
-            }
-            advanceTurn(room);
-        }
+        Player cur = room.getCurrentPlayer();
+        if (cur == null || cur.isConnected()) return;
+        room.addEvent("Skipping offline player " + cur.getName());
+        log.info("skip offline current room={} playerId={} index={}",
+                room.getCode(), cur.getId(), room.getCurrentPlayerIndex());
+        advanceTurn(room);
     }
 
     // ---- helpers ----
 
+    /**
+     * Move exactly one step in the current direction, then continue only over
+     * disconnected seats. Connected players are never jumped. Order is a pure
+     * function of seat index + direction (no randomness).
+     */
     private void advanceTurn(Room room) {
         int n = room.getPlayers().size();
         if (n == 0) return;
-        int next = (room.getCurrentPlayerIndex() + room.getDirection()) % n;
-        if (next < 0) next += n;
-        room.setCurrentPlayerIndex(next);
-        room.setMustDrawOrPlay(false);
-        room.setLastDrawnCardId(null);
+        int dir = room.getDirection() < 0 ? -1 : 1;
+        if (room.getDirection() != dir) {
+            room.setDirection(dir);
+        }
+        int from = Math.floorMod(room.getCurrentPlayerIndex(), n);
+        int idx = from;
+        String fromId = room.getPlayers().get(from).getId();
+        for (int step = 0; step < n; step++) {
+            idx = Math.floorMod(idx + dir, n);
+            Player candidate = room.getPlayers().get(idx);
+            if (candidate.isConnected() || step == n - 1) {
+                room.setCurrentPlayerIndex(idx);
+                room.setMustDrawOrPlay(false);
+                room.setLastDrawnCardId(null);
+                log.info("TURN room={} fromIndex={} fromId={} toIndex={} toId={} toName={} dir={} step={} connected={}",
+                        room.getCode(), from, fromId, idx, candidate.getId(), candidate.getName(),
+                        dir, step + 1, candidate.isConnected());
+                return;
+            }
+            room.addEvent("Skipping offline player " + candidate.getName());
+            log.info("TURN skip-offline room={} index={} playerId={} name={}",
+                    room.getCode(), idx, candidate.getId(), candidate.getName());
+        }
+    }
+
+    private String currentId(Room room) {
+        Player p = room.getCurrentPlayer();
+        return p == null ? null : p.getId();
     }
 
     private Card drawFromPile(Room room) {
@@ -754,10 +836,16 @@ public class GameService {
         }
 
         Player current = room.getCurrentPlayer();
+        boolean showTurn = current != null && (room.getStatus() == GameStatus.PLAYING
+                || room.getStatus() == GameStatus.PAUSED);
+        String currentId = showTurn ? current.getId() : null;
+        view.setCurrentPlayerId(currentId);
+        view.setCurrentPlayerName(showTurn ? current.getName() : null);
+        view.setStateVersion(room.getStateVersion());
+
         List<PlayerView> players = new ArrayList<>();
         for (Player p : room.getPlayers()) {
-            boolean isCurrent = current != null && current.getId().equals(p.getId())
-                    && room.getStatus() == GameStatus.PLAYING;
+            boolean isCurrent = currentId != null && currentId.equals(p.getId());
             players.add(new PlayerView(
                     p.getId(), p.getName(), p.getHandSize(), p.isConnected(),
                     p.isCalledUno(), p.isHost(), isCurrent));
@@ -767,7 +855,7 @@ public class GameService {
         Player you = viewerId == null ? null : room.findPlayer(viewerId);
         if (you != null) {
             view.setYourHand(new ArrayList<>(you.getHand()));
-            view.setYourTurn(current != null && current.getId().equals(viewerId)
+            view.setYourTurn(currentId != null && currentId.equals(viewerId)
                     && room.getStatus() == GameStatus.PLAYING);
         } else {
             view.setYourHand(List.of());
@@ -784,6 +872,8 @@ public class GameService {
 
     public record JoinResult(String playerId, String roomCode, String displayName,
                              boolean host, GameStateView gameState) {}
+
+    public record AddressedState(String playerId, GameStateView view) {}
 
     private static class GameException extends RuntimeException {
         GameException(String message) {

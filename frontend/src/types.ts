@@ -35,6 +35,10 @@ export interface GameStateView {
   lastDrawnCardId: string | null;
   winnerId: string | null;
   winnerName: string | null;
+  /** Server seat. UI must key off this, never a locally guessed next player. */
+  currentPlayerId?: string | null;
+  currentPlayerName?: string | null;
+  stateVersion?: number;
   eventLog: string[];
   error?: string | null;
   message?: string | null;

@@ -16,6 +16,10 @@ export function useGameSocket({ session, onState, onError }: Options) {
   const onErrorRef = useRef(onError);
   const attemptRef = useRef(0);
   const intentionalClose = useRef(false);
+  const lastVersionRef = useRef(-1);
+  const lastBodyRef = useRef('');
+  const subRef = useRef<{ unsubscribe: () => void } | null>(null);
+  const lastSendRef = useRef<{ key: string; at: number }>({ key: '', at: 0 });
 
   useEffect(() => {
     onStateRef.current = onState;
@@ -25,16 +29,37 @@ export function useGameSocket({ session, onState, onError }: Options) {
   useEffect(() => {
     if (!session) {
       intentionalClose.current = true;
+      subRef.current?.unsubscribe();
+      subRef.current = null;
       clientRef.current?.deactivate();
       clientRef.current = null;
       setStatus('idle');
       attemptRef.current = 0;
+      lastVersionRef.current = -1;
+      lastBodyRef.current = '';
       return;
     }
 
     intentionalClose.current = false;
+    lastVersionRef.current = -1;
+    lastBodyRef.current = '';
     const code = session.roomCode.toUpperCase();
     setStatus('connecting');
+
+    const applyMessage = (msg: IMessage) => {
+      if (msg.body === lastBodyRef.current) return;
+      try {
+        const state = JSON.parse(msg.body) as GameStateView;
+        const version = typeof state.stateVersion === 'number' ? state.stateVersion : null;
+        if (version != null && version < lastVersionRef.current) return;
+        lastBodyRef.current = msg.body;
+        if (version != null) lastVersionRef.current = version;
+        if (state.error) onErrorRef.current?.(state.error);
+        onStateRef.current(state);
+      } catch {
+        onErrorRef.current?.('Bad game update from server');
+      }
+    };
 
     const client = new Client({
       brokerURL: getWsUrl(),
@@ -46,18 +71,18 @@ export function useGameSocket({ session, onState, onError }: Options) {
         attemptRef.current = 0;
         client.reconnectDelay = 2000;
         setStatus('connected');
-        client.subscribe(`/topic/room/${code}/player/${session.playerId}`, (msg: IMessage) => {
-          try {
-            const state = JSON.parse(msg.body) as GameStateView;
-            if (state.error) onErrorRef.current?.(state.error);
-            onStateRef.current(state);
-          } catch {
-            onErrorRef.current?.('Bad game update from server');
-          }
-        });
+        subRef.current?.unsubscribe();
+        subRef.current = client.subscribe(
+          `/topic/room/${code}/player/${session.playerId}`,
+          applyMessage,
+        );
         client.publish({
           destination: `/app/room/${code}/sync`,
-          body: JSON.stringify({ playerId: session.playerId, type: 'SYNC' }),
+          body: JSON.stringify({
+            playerId: session.playerId,
+            type: 'SYNC',
+            actionId: `sync-${Date.now()}`,
+          }),
         });
       },
       onDisconnect: () => {
@@ -87,6 +112,8 @@ export function useGameSocket({ session, onState, onError }: Options) {
 
     return () => {
       intentionalClose.current = true;
+      subRef.current?.unsubscribe();
+      subRef.current = null;
       client.deactivate();
       if (clientRef.current === client) {
         clientRef.current = null;
@@ -100,23 +127,34 @@ export function useGameSocket({ session, onState, onError }: Options) {
   ) => {
     if (!session) {
       onErrorRef.current?.('Not in a room');
-      return;
+      return false;
     }
     if (!clientRef.current?.connected) {
       onErrorRef.current?.('Not connected — reconnecting…');
-      return;
+      return false;
     }
+    const key = `${type}|${extra?.cardId || ''}|${extra?.chosenColor || ''}|${extra?.targetPlayerId || ''}`;
+    const now = Date.now();
+    if (lastSendRef.current.key === key && now - lastSendRef.current.at < 700) {
+      return false;
+    }
+    lastSendRef.current = { key, at: now };
     const code = session.roomCode.toUpperCase();
+    const actionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `${type}-${now}-${Math.random().toString(36).slice(2, 8)}`;
     clientRef.current.publish({
       destination: `/app/room/${code}/action`,
       body: JSON.stringify({
         playerId: session.playerId,
         type,
+        actionId,
         cardId: extra?.cardId,
         chosenColor: extra?.chosenColor,
         targetPlayerId: extra?.targetPlayerId,
       }),
     });
+    return true;
   }, [session]);
 
   const connected = status === 'connected';

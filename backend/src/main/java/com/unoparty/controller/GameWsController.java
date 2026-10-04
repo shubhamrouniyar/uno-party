@@ -2,7 +2,6 @@ package com.unoparty.controller;
 
 import com.unoparty.dto.GameAction;
 import com.unoparty.dto.GameStateView;
-import com.unoparty.dto.PlayerView;
 import com.unoparty.presence.PresenceService;
 import com.unoparty.service.GameService;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
@@ -77,24 +76,15 @@ public class GameWsController {
             presence.bind(headers.getSessionId(), upper, action.getPlayerId());
             gameService.markConnected(upper, action.getPlayerId());
             if (!gameService.roomExists(upper)) return;
-            GameStateView view = gameService.getStateForPlayer(upper, action.getPlayerId());
-            messaging.convertAndSend(
-                    "/topic/room/" + upper + "/player/" + action.getPlayerId(),
-                    view);
             broadcastPersonalized(upper);
         }
     }
 
     private void broadcastPersonalized(String code) {
-        GameStateView probe = gameService.getStateForPlayer(code, null);
-        if (probe.getPlayers() == null) return;
-
-        for (PlayerView pv : probe.getPlayers()) {
-            GameStateView personal = gameService.getStateForPlayer(code, pv.getId());
+        for (var snap : gameService.addressedStates(code)) {
             messaging.convertAndSend(
-                    "/topic/room/" + code + "/player/" + pv.getId(),
-                    personal);
+                    "/topic/room/" + code + "/player/" + snap.playerId(),
+                    snap.view());
         }
-        messaging.convertAndSend("/topic/room/" + code, probe);
     }
 }

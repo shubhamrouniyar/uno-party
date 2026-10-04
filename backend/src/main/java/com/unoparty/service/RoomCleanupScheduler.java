@@ -1,7 +1,5 @@
 package com.unoparty.service;
 
-import com.unoparty.dto.GameStateView;
-import com.unoparty.dto.PlayerView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -44,12 +42,8 @@ public class RoomCleanupScheduler {
     }
 
     private void broadcast(String code) {
-        GameStateView probe = gameService.getStateForPlayer(code, null);
-        if (probe.getPlayers() == null) return;
-        for (PlayerView pv : probe.getPlayers()) {
-            GameStateView personal = gameService.getStateForPlayer(code, pv.getId());
-            messaging.convertAndSend("/topic/room/" + code + "/player/" + pv.getId(), personal);
+        for (var snap : gameService.addressedStates(code)) {
+            messaging.convertAndSend("/topic/room/" + code + "/player/" + snap.playerId(), snap.view());
         }
-        messaging.convertAndSend("/topic/room/" + code, probe);
     }
 }
